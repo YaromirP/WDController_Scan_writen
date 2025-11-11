@@ -1,0 +1,513 @@
+local component = require("component")
+local term = require("term")
+local computer = require("computer")
+local event = require("event")
+local keyboard = require("keyboard")
+local io = require("io")
+local filesystem = require("filesystem")
+local math = require("math")
+
+-- Проверка доступности терминала
+if not term.isAvailable() then
+  computer.beep()
+  os.exit()
+end
+
+-- Функции для ошибок
+function showError(message)
+  component.gpu.setBackground(0x000000)
+  component.gpu.setForeground(0xFF0000)
+  local xt, yt = term.getCursor()
+  component.gpu.set(xt, yt, message)
+  component.gpu.setBackground(0x000000)
+  component.gpu.setForeground(0xFFFFFF)
+  print("")
+end
+
+function showErrorAndExit(message)
+  showError(message)
+  os.exit()
+end
+
+-- Проверка необходимых компонентов
+if not component.isAvailable("warpdriveShipController") then
+  showErrorAndExit("No ship controller detected")
+end
+
+if not component.isAvailable("warpdriveRadar") then
+  showErrorAndExit("No radar detected")
+end
+
+local radar = component.warpdriveRadar
+
+-- Импорт библиотек для управления кораблем
+local wdc = require("WDControllerProxy")
+local controllersManager = wdc.createControllersManager()
+
+-- Multi-Core: Получение информации о всех контроллерах
+function getMultiCoreInfo()
+    local info = {}
+    info.totalControllers = #controllersManager.controllers
+    info.controllerDetails = {}
+    
+    for i, controllerConf in ipairs(controllersManager.controllers) do
+        local controller = controllerConf.controller
+        local x, y, z = controller:getCoords()
+        local name = controller:getName()
+        local addr = controller:getControllerAddr()
+        
+        table.insert(info.controllerDetails, {
+            index = i,
+            name = name,
+            address = addr,
+            position = {x = x, y = y, z = z},
+            ready = controllerConf.ready
+        })
+    end
+    
+    return info
+end
+
+-- Multi-Core: Синхронизированное перемещение всех контроллеров
+function synchronizedJumpTo(x, y, z)
+    local multiCoreInfo = getMultiCoreInfo()
+    print(string.format("Multi-Core: Using %d controllers for jump", multiCoreInfo.totalControllers))
+    
+    -- Синхронизация размеров всех контроллеров
+    if multiCoreInfo.totalControllers > 1 then
+        print("Synchronizing controller dimensions...")
+        local mainController = controllersManager.controllers[1].controller
+        controllersManager:configAllBasedOn(mainController)
+    end
+    
+    -- Выполнение прыжка через менеджер (использует все доступные контроллеры)
+    local success, errorMsg = controllersManager:jumpTo(x, y, z)
+    if not success then
+        return false, "Multi-Core jump failed: " .. tostring(errorMsg)
+    end
+    
+    -- Ожидание завершения прыжка для всех контроллеров
+    local maxWaitTime = 60  -- Увеличиваем время ожидания для Multi-Core
+    local waitTime = 0
+    
+    while controllersManager:isJumpingInProgress() and waitTime < maxWaitTime do
+        local activeJumps = 0
+        for i, controllerConf in ipairs(controllersManager.controllers) do
+            if not controllerConf.ready then
+                activeJumps = activeJumps + 1
+            end
+        end
+        
+        print(string.format("Multi-Core: %d controllers actively jumping...", activeJumps))
+        os.sleep(2)
+        waitTime = waitTime + 2
+        
+        -- Проверка прерывания
+        local signal = {computer.pullSignal(0)}
+        if signal[1] == "key_down" and signal[4] == 16 then  -- Q key
+            controllersManager:stopJumping()
+            return false, "Jump aborted by user"
+        end
+    end
+    
+    if waitTime >= maxWaitTime then
+        controllersManager:stopJumping()
+        return false, "Multi-Core jump timeout"
+    end
+    
+    -- Проверка конечной позиции всех контроллеров
+    local finalPosition = controllersManager:getPosition()
+    print(string.format("Multi-Core jump completed to: X=%d, Y=%d, Z=%d", finalPosition))
+    
+    return true
+end
+
+-- Функция сканирования
+function performScan(radius, scanResultsFile)
+    radius = radius or 9999
+    
+    if radius < 1 or radius > 9999 then
+        return false, "Radius must be between 1 and 9999"
+    end
+
+    local energy, energyMax = radar.energy()
+    local energyRequired = radar.getEnergyRequired(radius)
+    local scanDuration = radar.getScanDuration(radius)
+    
+    if energy < energyRequired then
+        return false, "Low energy level... (" .. energy .. "/" .. energyRequired .. ")"
+    end
+    
+    radar.radius(radius)
+    radar.start()
+    os.sleep(0.5)
+
+    print("Scanning... (" .. scanDuration .. " s)")
+    os.sleep(scanDuration)
+
+    local delay = 0
+    local count
+    repeat
+        count = radar.getResultsCount()
+        os.sleep(0.1)
+        delay = delay + 1
+    until (count ~= nil and count ~= -1) or delay > 10
+
+    local results = {}
+    if count ~= nil and count > 0 then
+        for i = 0, count - 1 do
+            local success, type, name, x, y, z = radar.getResult(i)
+            if success then
+                local resultString = type .. " " .. name .. " @ (" .. x .. " " .. y .. " " .. z .. ")"
+                table.insert(results, resultString)
+                print(resultString)
+            else
+                local errorString = "Error " .. type
+                table.insert(results, errorString)
+                showError(errorString)
+            end
+        end
+    else
+        local noResults = "Nothing found at current position"
+        table.insert(results, noResults)
+        print(noResults)
+    end
+
+    -- Запись результатов в файл
+    if scanResultsFile then
+        local file = io.open(scanResultsFile, "a")
+        if file then
+            file:write("--- Scan Results at " .. os.date() .. " ---\n")
+            for _, result in ipairs(results) do
+                file:write(result .. "\n")
+            end
+            file:write("--- End of Scan ---\n\n")
+            file:close()
+            print("Results saved to: " .. scanResultsFile)
+        else
+            showError("Could not open results file for writing")
+        end
+    end
+
+    return true, results
+end
+
+-- Улучшенная функция сканирования и прыжков с Multi-Core поддержкой
+function scanAndJump()
+    term.clear()
+    print("=== Multi-Core Scan and Jump Mode ===")
+    
+    -- Показ информации о Multi-Core системе
+    local multiCoreInfo = getMultiCoreInfo()
+    print(string.format("Detected %d ship controllers", multiCoreInfo.totalControllers))
+    for i, controller in ipairs(multiCoreInfo.controllerDetails) do
+        print(string.format("  Controller %d: %s (Ready: %s)", i, controller.name, tostring(controller.ready)))
+    end
+    print()
+    
+    print("Ship will move in a snake pattern and scan areas")
+    print("Space limit: ±249900 blocks from (0,0)")
+    print()
+    
+    -- Ввод параметров
+    io.write("Enter start X coordinate: ")
+    local startX = tonumber(io.read())
+    io.write("Enter start Z coordinate: ")
+    local startZ = tonumber(io.read())
+    io.write("Enter end X coordinate: ")
+    local endX = tonumber(io.read())
+    io.write("Enter end Z coordinate: ")
+    local endZ = tonumber(io.read())
+    io.write("Enter Y (height) coordinate: ")
+    local yCoord = tonumber(io.read())
+    io.write("Enter results filename (default: scan_results.txt): ")
+    local resultsFile = io.read()
+    resultsFile = resultsFile ~= "" and resultsFile or "scan_results.txt"
+    
+    -- Валидация координат
+    local limit = 249900
+    local coords = {startX, startZ, endX, endZ}
+    for _, coord in ipairs(coords) do
+        if math.abs(coord) > limit then
+            showError("Coordinate " .. coord .. " exceeds space limit (±" .. limit .. ")")
+            return
+        end
+    end
+    
+    if not startX or not startZ or not endX or not endZ or not yCoord then
+        showError("Invalid coordinates")
+        return
+    end
+    
+    -- Параметры движения
+    local stepSize = 19990
+    local scanRadius = 9999
+    
+    -- Расчет направления
+    local xStep = endX >= startX and stepSize or -stepSize
+    local zStep = endZ >= startZ and stepSize or -stepSize
+    
+    local currentX, currentZ = startX, startZ
+    local moveXFirst = true
+    local totalScans = 0
+    
+    print("\nStarting Multi-Core scan and jump sequence...")
+    print("Step size: " .. stepSize)
+    print("Scan radius: " .. scanRadius)
+    print("Results file: " .. resultsFile)
+    print("Press Q to abort at any time")
+    
+    -- Создание файла результатов
+    local file = io.open(resultsFile, "w")
+    if file then
+        file:write("=== Multi-Core Scan and Jump Results ===\n")
+        file:write("Controllers: " .. multiCoreInfo.totalControllers .. "\n")
+        file:write("Start: (" .. startX .. ", " .. yCoord .. ", " .. startZ .. ")\n")
+        file:write("End: (" .. endX .. ", " .. yCoord .. ", " .. endZ .. ")\n")
+        file:write("Step size: " .. stepSize .. "\n")
+        file:write("Scan radius: " .. scanRadius .. "\n")
+        file:write("Started: " .. os.date() .. "\n\n")
+        file:close()
+    end
+    
+    -- Основной цикл движения и сканирования
+    while true do
+        -- Проверка прерывания
+        local signal = {computer.pullSignal(0)}
+        if signal[1] == "key_down" and signal[4] == 16 then  -- Q key
+            print("\nScan aborted by user")
+            controllersManager:stopJumping()
+            break
+        end
+        
+        -- Multi-Core прыжок в текущую позицию
+        print(string.format("\nMulti-Core moving to: X=%d, Y=%d, Z=%d", currentX, yCoord, currentZ))
+        local jumpSuccess, jumpError = synchronizedJumpTo(currentX, yCoord, currentZ)
+        if not jumpSuccess then
+            showError("Multi-Core jump failed: " .. jumpError)
+            break
+        end
+        
+        -- Сканирование
+        print("Performing scan...")
+        local scanSuccess, scanResults = performScan(scanRadius, resultsFile)
+        if not scanSuccess then
+            showError("Scan failed: " .. tostring(scanResults))
+        end
+        
+        totalScans = totalScans + 1
+        
+        -- Проверка достижения конечной точки
+        if currentX == endX and currentZ == endZ then
+            print("\nReached destination!")
+            break
+        end
+        
+        -- Расчет следующей позиции (змейкой)
+        if moveXFirst then
+            if math.abs(currentX - endX) <= stepSize then
+                currentX = endX
+                moveXFirst = false
+            else
+                currentX = currentX + xStep
+            end
+        else
+            if math.abs(currentZ - endZ) <= stepSize then
+                currentZ = endZ
+                moveXFirst = true
+            else
+                currentZ = currentZ + zStep
+                moveXFirst = true
+            end
+        end
+        
+        -- Корректировка если вышли за пределы
+        currentX = xStep > 0 and math.min(currentX, endX) or math.max(currentX, endX)
+        currentZ = zStep > 0 and math.min(currentZ, endZ) or math.max(currentZ, endZ)
+        
+        os.sleep(1)
+    end
+    
+    -- Запись итогов
+    local file = io.open(resultsFile, "a")
+    if file then
+        file:write("\n=== Multi-Core Summary ===\n")
+        file:write("Total controllers: " .. multiCoreInfo.totalControllers .. "\n")
+        file:write("Total scans performed: " .. totalScans .. "\n")
+        file:write("Completed: " .. os.date() .. "\n")
+        file:close()
+    end
+    
+    print("\nMulti-Core scan and jump sequence completed!")
+    print("Controllers used: " .. multiCoreInfo.totalControllers)
+    print("Total scans: " .. totalScans)
+    print("Results saved to: " .. resultsFile)
+    print("Press any key to continue...")
+    computer.pullSignal("key_down")
+end
+
+-- Multi-Core: Функция диагностики системы
+function multiCoreDiagnostics()
+    term.clear()
+    print("=== Multi-Core Ship Diagnostics ===")
+    
+    local info = getMultiCoreInfo()
+    print(string.format("Total controllers: %d", info.totalControllers))
+    print()
+    
+    for i, controller in ipairs(info.controllerDetails) do
+        print(string.format("Controller %d:", controller.index))
+        print(string.format("  Name: %s", controller.name))
+        print(string.format("  Address: %s", controller.address))
+        print(string.format("  Position: X=%d, Y=%d, Z=%d", 
+            controller.position.x, controller.position.y, controller.position.z))
+        print(string.format("  Status: %s", controller.ready and "READY" : "BUSY"))
+        
+        -- Проверка связи с ядром
+        local coreAddr = controllersManager.controllers[i].controller:getCoreAddr()
+        print(string.format("  Core: %s", coreAddr or "NOT FOUND"))
+        print()
+    end
+    
+    -- Проверка синхронизации размеров
+    if info.totalControllers > 1 then
+        print("Checking dimension synchronization...")
+        local mainDims = {controllersManager.controllers[1].controller:getDims()}
+        local synchronized = true
+        
+        for i = 2, info.totalControllers do
+            local dims = {controllersManager.controllers[i].controller:getDims()}
+            for j = 1, 6 do
+                if math.abs(mainDims[j] - dims[j]) > 0.1 then
+                    synchronized = false
+                    break
+                end
+            end
+        end
+        
+        print(string.format("Dimensions synchronized: %s", synchronized and "YES" : "NO"))
+    end
+    
+    print("\nPress any key to continue...")
+    computer.pullSignal("key_down")
+end
+
+-- Функция для меню
+function showMenu()
+    print("\n=== Multi-Core Ship Control System ===")
+    print("1 - Multi-Core Scan and Jump Mode")
+    print("2 - Manual Coordinates Jump")
+    print("3 - Single Scan")
+    print("4 - Ship Status")
+    print("5 - Multi-Core Diagnostics")
+    print("6 - Synchronize All Controllers")
+    print("Q - Exit")
+    print("Choose option: ")
+end
+
+-- Функция ручного ввода координат
+function manualJump()
+    print("Enter coordinates X, Y, Z:")
+    io.write("X: ")
+    local x = tonumber(io.read())
+    io.write("Y: ")
+    local y = tonumber(io.read())
+    io.write("Z: ")
+    local z = tonumber(io.read())
+    
+    if x and y and z then
+        local success, error = synchronizedJumpTo(x, y, z)
+        if success then
+            print("Multi-Core jump successful!")
+        else
+            showError("Multi-Core jump failed: " .. error)
+        end
+    else
+        showError("Invalid coordinates")
+    end
+end
+
+-- Функция одиночного сканирования
+function singleScan()
+    print("Performing single scan...")
+    local success, results = performScan(9999, "scan_results.txt")
+    if success then
+        print("Scan completed successfully!")
+    else
+        showError("Scan failed: " .. tostring(results))
+    end
+end
+
+-- Функция статуса корабля
+function shipStatus()
+    local x, y, z = controllersManager:getPosition()
+    print(string.format("Current position: X=%d, Y=%d, Z=%d", x, y, z))
+    print("Jump in progress: " .. tostring(controllersManager:isJumpingInProgress()))
+    
+    local multiCoreInfo = getMultiCoreInfo()
+    print(string.format("Active controllers: %d/%d", 
+        multiCoreInfo.totalControllers, multiCoreInfo.totalControllers))
+    
+    local energy, energyMax = radar.energy()
+    print(string.format("Radar energy: %d/%d", energy, energyMax))
+end
+
+-- Функция синхронизации контроллеров
+function synchronizeControllers()
+    print("Synchronizing all controllers...")
+    
+    if #controllersManager.controllers > 1 then
+        local mainController = controllersManager.controllers[1].controller
+        controllersManager:configAllBasedOn(mainController)
+        print("All controllers synchronized successfully!")
+    else
+        print("Only one controller detected - synchronization not needed")
+    end
+    
+    print("Press any key to continue...")
+    computer.pullSignal("key_down")
+end
+
+-- Основной цикл программы
+function main()
+    local running = true
+    
+    -- Авто-синхронизация при запуске
+    if #controllersManager.controllers > 1 then
+        print("Multi-Core system detected. Auto-synchronizing controllers...")
+        synchronizeControllers()
+    end
+    
+    while running do
+        term.clear()
+        showMenu()
+        
+        local input = io.read()
+        
+        if input == "1" then
+            scanAndJump()
+        elseif input == "2" then
+            manualJump()
+        elseif input == "3" then
+            singleScan()
+        elseif input == "4" then
+            shipStatus()
+            print("Press any key to continue...")
+            computer.pullSignal("key_down")
+        elseif input == "5" then
+            multiCoreDiagnostics()
+        elseif input == "6" then
+            synchronizeControllers()
+        elseif input:lower() == "q" then
+            running = false
+        else
+            showError("Invalid option")
+            os.sleep(1)
+        end
+    end
+    
+    print("Exiting Multi-Core system...")
+end
+
+-- Запуск программы
+main()
