@@ -6,13 +6,13 @@ local keyboard = require("keyboard")
 local io = require("io")
 local filesystem = require("filesystem")
 local math = require("math")
-
+ 
 -- Проверка доступности терминала
 if not term.isAvailable() then
   computer.beep()
   os.exit()
 end
-
+ 
 -- Функции для ошибок
 function showError(message)
   component.gpu.setBackground(0x000000)
@@ -23,27 +23,27 @@ function showError(message)
   component.gpu.setForeground(0xFFFFFF)
   print("")
 end
-
+ 
 function showErrorAndExit(message)
   showError(message)
   os.exit()
 end
-
+ 
 -- Проверка необходимых компонентов
 if not component.isAvailable("warpdriveShipController") then
   showErrorAndExit("No ship controller detected")
 end
-
+ 
 if not component.isAvailable("warpdriveRadar") then
   showErrorAndExit("No radar detected")
 end
-
+ 
 local radar = component.warpdriveRadar
-
+ 
 -- Импорт библиотек для управления кораблем
 local wdc = require("WDControllerProxy")
 local controllersManager = wdc.createControllersManager()
-
+ 
 -- Multi-Core: Получение информации о всех контроллерах
 function getMultiCoreInfo()
     local info = {}
@@ -67,7 +67,7 @@ function getMultiCoreInfo()
     
     return info
 end
-
+ 
 -- Multi-Core: Синхронизированное перемещение всех контроллеров
 function synchronizedJumpTo(x, y, z)
     local multiCoreInfo = getMultiCoreInfo()
@@ -117,11 +117,11 @@ function synchronizedJumpTo(x, y, z)
     
     -- Проверка конечной позиции всех контроллеров
     local finalPosition = controllersManager:getPosition()
-    print(string.format("Multi-Core jump completed to: X=%d, Y=%d, Z=%d", finalPosition))
+    print(string.format("Multi-Core jump completed to:", finalPosition))
     
     return true
 end
-
+ 
 -- Функция сканирования
 function performScan(radius, scanResultsFile)
     radius = radius or 9999
@@ -129,7 +129,7 @@ function performScan(radius, scanResultsFile)
     if radius < 1 or radius > 9999 then
         return false, "Radius must be between 1 and 9999"
     end
-
+ 
     local energy, energyMax = radar.energy()
     local energyRequired = radar.getEnergyRequired(radius)
     local scanDuration = radar.getScanDuration(radius)
@@ -141,10 +141,10 @@ function performScan(radius, scanResultsFile)
     radar.radius(radius)
     radar.start()
     os.sleep(0.5)
-
+ 
     print("Scanning... (" .. scanDuration .. " s)")
     os.sleep(scanDuration)
-
+ 
     local delay = 0
     local count
     repeat
@@ -152,7 +152,7 @@ function performScan(radius, scanResultsFile)
         os.sleep(0.1)
         delay = delay + 1
     until (count ~= nil and count ~= -1) or delay > 10
-
+ 
     local results = {}
     if count ~= nil and count > 0 then
         for i = 0, count - 1 do
@@ -172,7 +172,7 @@ function performScan(radius, scanResultsFile)
         table.insert(results, noResults)
         print(noResults)
     end
-
+ 
     -- Запись результатов в файл
     if scanResultsFile then
         local file = io.open(scanResultsFile, "a")
@@ -188,10 +188,10 @@ function performScan(radius, scanResultsFile)
             showError("Could not open results file for writing")
         end
     end
-
+ 
     return true, results
 end
-
+ 
 -- Улучшенная функция сканирования и прыжков с Multi-Core поддержкой
 function scanAndJump()
     term.clear()
@@ -343,9 +343,8 @@ function scanAndJump()
     print("Total scans: " .. totalScans)
     print("Results saved to: " .. resultsFile)
     print("Press any key to continue...")
-    computer.pullSignal("key_down")
 end
-
+ 
 -- Multi-Core: Функция диагностики системы
 function multiCoreDiagnostics()
     term.clear()
@@ -361,7 +360,7 @@ function multiCoreDiagnostics()
         print(string.format("  Address: %s", controller.address))
         print(string.format("  Position: X=%d, Y=%d, Z=%d", 
             controller.position.x, controller.position.y, controller.position.z))
-        print(string.format("  Status: %s", controller.ready and "READY" : "BUSY"))
+        print(string.format("  Status: %s", controller.ready and "READY" or "BUSY"))
         
         -- Проверка связи с ядром
         local coreAddr = controllersManager.controllers[i].controller:getCoreAddr()
@@ -385,13 +384,12 @@ function multiCoreDiagnostics()
             end
         end
         
-        print(string.format("Dimensions synchronized: %s", synchronized and "YES" : "NO"))
+        print(string.format("Dimensions synchronized: %s", synchronized and "YES" or "NO"))
     end
     
     print("\nPress any key to continue...")
-    computer.pullSignal("key_down")
 end
-
+ 
 -- Функция для меню
 function showMenu()
     print("\n=== Multi-Core Ship Control System ===")
@@ -404,7 +402,7 @@ function showMenu()
     print("Q - Exit")
     print("Choose option: ")
 end
-
+ 
 -- Функция ручного ввода координат
 function manualJump()
     print("Enter coordinates X, Y, Z:")
@@ -426,7 +424,7 @@ function manualJump()
         showError("Invalid coordinates")
     end
 end
-
+ 
 -- Функция одиночного сканирования
 function singleScan()
     print("Performing single scan...")
@@ -437,7 +435,7 @@ function singleScan()
         showError("Scan failed: " .. tostring(results))
     end
 end
-
+ 
 -- Функция статуса корабля
 function shipStatus()
     local x, y, z = controllersManager:getPosition()
@@ -451,7 +449,7 @@ function shipStatus()
     local energy, energyMax = radar.energy()
     print(string.format("Radar energy: %d/%d", energy, energyMax))
 end
-
+ 
 -- Функция синхронизации контроллеров
 function synchronizeControllers()
     print("Synchronizing all controllers...")
@@ -465,9 +463,8 @@ function synchronizeControllers()
     end
     
     print("Press any key to continue...")
-    computer.pullSignal("key_down")
 end
-
+ 
 -- Основной цикл программы
 function main()
     local running = true
@@ -493,7 +490,6 @@ function main()
         elseif input == "4" then
             shipStatus()
             print("Press any key to continue...")
-            computer.pullSignal("key_down")
         elseif input == "5" then
             multiCoreDiagnostics()
         elseif input == "6" then
@@ -508,6 +504,6 @@ function main()
     
     print("Exiting Multi-Core system...")
 end
-
+ 
 -- Запуск программы
 main()
