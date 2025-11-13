@@ -94,7 +94,11 @@ function synchronizedJumpTo(x, y, z)
         local activeJumps = 0
         for i, controllerConf in ipairs(controllersManager.controllers) do
             if not controllerConf.ready then
-                activeJumps = activeJumps + 1
+               if activeJumps == multiCoreInfo then
+                activeJumps = 0
+                else
+                 activeJumps = activeJumps + 1
+               end
             end
         end
         
@@ -177,11 +181,9 @@ function performScan(radius, scanResultsFile)
     if scanResultsFile then
         local file = io.open(scanResultsFile, "a")
         if file then
-            file:write("--- Scan Results at " .. os.date() .. " ---\n")
             for _, result in ipairs(results) do
                 file:write(result .. "\n")
             end
-            file:write("--- End of Scan ---\n\n")
             file:close()
             print("Results saved to: " .. scanResultsFile)
         else
